@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- Hintergrund -->
+  <rect width="128" height="128" rx="22" fill="#1a1a2e"/>
+
+  <!-- Notenbalken -->
+  <rect x="38" y="28" width="52" height="6" rx="3" fill="#7777ee"/>
+
+  <!-- Notenstiel rechts -->
+  <rect x="84" y="28" width="6" height="42" rx="3" fill="#7777ee"/>
+
+  <!-- Notenkopf rechts (Smiley) -->
+  <ellipse cx="50" cy="72" rx="16" ry="12" fill="#7777ee"/>
+  <!-- Smiley Augen -->
+  <circle cx="45" cy="69" r="2.2" fill="#1a1a2e"/>
+  <circle cx="55" cy="69" r="2.2" fill="#1a1a2e"/>
+  <!-- Smiley Mund -->
+  <path d="M44 74 Q50 80 56 74" stroke="#1a1a2e" stroke-width="2.2" fill="none" stroke-linecap="round"/>
+
+  <!-- Notenkopf links (kleiner, zweite Note) -->
+  <ellipse cx="84" cy="70" rx="11" ry="8" fill="#5555cc"/>
+
+  <!-- Glanzpunkt -->
+  <ellipse cx="44" cy="66" rx="4" ry="2.5" fill="white" opacity="0.15"/>
+
+  <!-- Schlagschatten-Effekt unten -->
+  <rect x="38" y="94" width="52" height="5" rx="2.5" fill="#7777ee" opacity="0.18"/>
+</svg>
