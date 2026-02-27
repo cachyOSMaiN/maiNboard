@@ -267,28 +267,129 @@ class HotkeyDialog(QDialog):
 
 # ── Hotkey Manager ──────────────────────────────────────────────────────────────
 class HotkeyManager(QThread):
-    """Globaler Keyboard-Listener via pynput. Läuft im Hintergrund."""
+    """Globaler Keyboard-Listener.
+    Primär: evdev (Wayland-nativ, liest direkt vom Kernel).
+    Fallback: pynput (X11 / XWayland).
+    """
 
     hotkey_triggered = pyqtSignal(str)   # action_id
+
+    # evdev-Keyname → internes Format
+    _KEY_MAP = {
+        "KEY_KP0": "kp_0", "KEY_KP1": "kp_1", "KEY_KP2": "kp_2",
+        "KEY_KP3": "kp_3", "KEY_KP4": "kp_4", "KEY_KP5": "kp_5",
+        "KEY_KP6": "kp_6", "KEY_KP7": "kp_7", "KEY_KP8": "kp_8",
+        "KEY_KP9": "kp_9", "KEY_KPENTER": "kp_enter",
+        "KEY_KPPLUS": "kp_plus", "KEY_KPMINUS": "kp_minus",
+        "KEY_KPASTERISK": "kp_multiply", "KEY_KPSLASH": "kp_divide",
+        "KEY_F1": "f1",  "KEY_F2": "f2",  "KEY_F3": "f3",  "KEY_F4": "f4",
+        "KEY_F5": "f5",  "KEY_F6": "f6",  "KEY_F7": "f7",  "KEY_F8": "f8",
+        "KEY_F9": "f9",  "KEY_F10": "f10","KEY_F11": "f11","KEY_F12": "f12",
+        "KEY_SPACE": "space", "KEY_ENTER": "enter", "KEY_TAB": "tab",
+        "KEY_DELETE": "delete", "KEY_LEFT": "left", "KEY_RIGHT": "right",
+        "KEY_UP": "up",  "KEY_DOWN": "down",
+        **{f"KEY_{c}": c.lower() for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"},
+        **{f"KEY_{n}": n for n in "0123456789"},
+    }
+    _MOD_MAP = {
+        "KEY_LEFTCTRL":  "ctrl",  "KEY_RIGHTCTRL":  "ctrl",
+        "KEY_LEFTALT":   "alt",   "KEY_RIGHTALT":   "alt",
+        "KEY_LEFTSHIFT": "shift", "KEY_RIGHTSHIFT": "shift",
+    }
 
     def __init__(self):
         super().__init__()
         self._hotkeys: dict[str, str] = {}
-        self._lock     = threading.Lock()
-        self._listener = None
+        self._lock      = threading.Lock()
         self._modifiers: set[str] = set()
+        self._running   = False
+        self._listener  = None   # pynput-Fallback
 
     def update_hotkeys(self, hotkeys: dict):
         with self._lock:
             self._hotkeys = dict(hotkeys)
 
     def run(self):
+        self._running = True
+        if not self._run_evdev():
+            self._run_pynput()
+
+    # ── evdev (Wayland-nativ) ───────────────────────────────────────────────────
+    def _run_evdev(self) -> bool:
+        """Gibt True zurück wenn evdev verfügbar war und der Loop gelaufen ist."""
+        try:
+            import evdev
+            from evdev import ecodes
+        except ImportError:
+            return False
+
+        devices: dict = {}
+        for path in evdev.list_devices():
+            try:
+                dev = evdev.InputDevice(path)
+                if ecodes.EV_KEY in dev.capabilities():
+                    devices[dev.fd] = dev
+            except Exception:
+                pass
+
+        if not devices:
+            return False
+
+        import select as _select
+        try:
+            while self._running:
+                try:
+                    r, _, _ = _select.select(list(devices.keys()), [], [], 0.2)
+                except ValueError:
+                    break
+                for fd in r:
+                    dev = devices.get(fd)
+                    if dev is None:
+                        continue
+                    try:
+                        for event in dev.read():
+                            if event.type != ecodes.EV_KEY:
+                                continue
+                            raw = ecodes.KEY.get(event.code, "")
+                            key_name = raw[0] if isinstance(raw, list) else raw
+                            if not key_name:
+                                continue
+                            mod = self._MOD_MAP.get(key_name)
+                            if event.value == 1:      # key down
+                                if mod:
+                                    self._modifiers.add(mod)
+                                else:
+                                    key_str = self._KEY_MAP.get(key_name, "")
+                                    if key_str:
+                                        mods = sorted(self._modifiers)
+                                        full = ("+".join(mods + [key_str])
+                                                if mods else key_str)
+                                        with self._lock:
+                                            for action_id, hk in self._hotkeys.items():
+                                                if hk == full:
+                                                    self.hotkey_triggered.emit(action_id)
+                            elif event.value == 0:    # key up
+                                if mod:
+                                    self._modifiers.discard(mod)
+                    except OSError:
+                        devices.pop(fd, None)
+                        if not devices:
+                            break
+        finally:
+            for dev in devices.values():
+                try:
+                    dev.close()
+                except Exception:
+                    pass
+        return True
+
+    # ── pynput (X11 / XWayland-Fallback) ───────────────────────────────────────
+    def _run_pynput(self):
         try:
             from pynput import keyboard as kb
         except ImportError:
-            return   # graceful fallback – pynput not installed
+            return
 
-        # Build modifier map (safe against missing attributes)
         _MOD_MAP: dict = {}
         for attr, name in [
             ("ctrl",    "ctrl"), ("ctrl_l",  "ctrl"), ("ctrl_r",  "ctrl"),
@@ -299,7 +400,6 @@ class HotkeyManager(QThread):
             if hasattr(kb.Key, attr):
                 _MOD_MAP[getattr(kb.Key, attr)] = name
 
-        # Build special-key map
         _KEY_MAP: dict = {}
         for attr, name in [
             ("f1","f1"),("f2","f2"),("f3","f3"),("f4","f4"),
@@ -317,10 +417,8 @@ class HotkeyManager(QThread):
             if mod:
                 self._modifiers.add(mod)
                 return
-
             key_str = _KEY_MAP.get(key, "")
             if not key_str:
-                # Character keys
                 try:
                     char = key.char
                     if char and char.lower().isalnum():
@@ -329,10 +427,8 @@ class HotkeyManager(QThread):
                     pass
             if not key_str:
                 return
-
             mods = sorted(self._modifiers)
             full = "+".join(mods + [key_str]) if mods else key_str
-
             with self._lock:
                 for action_id, hotkey in self._hotkeys.items():
                     if hotkey == full:
@@ -351,6 +447,7 @@ class HotkeyManager(QThread):
             pass
 
     def stop_listener(self):
+        self._running = False
         if self._listener:
             try:
                 self._listener.stop()
