@@ -480,16 +480,15 @@ class AudioPlayer(QThread):
         self.volume     = volume
         self.overdrive  = overdrive
         self._procs: list[subprocess.Popen] = []
+        self._paplay_procs: list[subprocess.Popen] = []
 
     def _af_filter(self) -> str:
-        """ffmpeg -af Filterkette: Lautstärke + optionales Hard-Clipping.
+        """ffmpeg -af: nur Overdrive-Clipping. Lautstärke wird live via pactl gesetzt."""
+        return f"volume={float(self.overdrive)}"
 
-        Overdrive-Prinzip: Volume wird x-fach geboosted, bei der Konvertierung
-        nach s16le clippt ffmpeg automatisch bei ±32767 → Hard-Distortion.
-        """
-        vol = self.volume / 100.0
-        total = vol * self.overdrive
-        return f"volume={total}"
+    def _pa_volume(self) -> int:
+        """Lautstärke als PulseAudio-Wert (0–65536, 65536 = 100 %)."""
+        return int(65536 * self.volume / 100)
 
     def _spawn_to_sink(self, sink_name: str) -> list[subprocess.Popen]:
         """ffmpeg | paplay –– zuverlässigstes PulseAudio-Routing."""
@@ -502,11 +501,13 @@ class AudioPlayer(QThread):
         )
         paplay = subprocess.Popen(
             ["paplay", "--device", sink_name, "--raw",
-             "--format=s16le", "--rate=48000", "--channels=2"],
+             "--format=s16le", "--rate=48000", "--channels=2",
+             f"--volume={self._pa_volume()}"],
             stdin=ffmpeg.stdout,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-        ffmpeg.stdout.close()   # Pipe-Ende im Parent schließen
+        ffmpeg.stdout.close()
+        self._paplay_procs.append(paplay)
         return [ffmpeg, paplay]
 
     def _spawn_to_default(self) -> list[subprocess.Popen]:
@@ -523,11 +524,37 @@ class AudioPlayer(QThread):
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         )
         p2 = subprocess.Popen(
-            ["paplay", "--raw", "--format=s16le", "--rate=48000", "--channels=2"],
+            ["paplay", "--raw", "--format=s16le", "--rate=48000", "--channels=2",
+             f"--volume={self._pa_volume()}"],
             stdin=p.stdout, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         p.stdout.close()
+        self._paplay_procs.append(p2)
         return [p, p2]
+
+    def _sink_input_idx(self, pid: int) -> str | None:
+        """Gibt den pactl Sink-Input-Index für eine paplay-PID zurück."""
+        r = subprocess.run(["pactl", "list", "sink-inputs"],
+                           capture_output=True, text=True)
+        idx = None
+        for line in r.stdout.splitlines():
+            s = line.strip()
+            if s.startswith("Sink Input #"):
+                idx = s.split("#")[1]
+            elif "application.process.id" in s and f'= "{pid}"' in s:
+                return idx
+        return None
+
+    def set_volume(self, volume: int):
+        """Ändert die Lautstärke aller laufenden paplay-Prozesse live via pactl."""
+        for p in self._paplay_procs:
+            if p.poll() is None:
+                idx = self._sink_input_idx(p.pid)
+                if idx:
+                    subprocess.Popen(
+                        ["pactl", "set-sink-input-volume", idx, f"{volume}%"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    )
 
     def run(self):
         self.sig_started.emit(self.btn_idx)
@@ -1267,6 +1294,10 @@ class MainWindow(QMainWindow):
     def _on_volume(self, v: int):
         self.config.volume = v
         self.lbl_vol.setText(f"{v} %")
+        for players in self.players.values():
+            for player in players:
+                if player.isRunning():
+                    player.set_volume(v)
 
     def _on_local_changed(self, state: int):
         self.config.local_monitor = (state == Qt.CheckState.Checked.value)
