@@ -903,13 +903,14 @@ class MainWindow(QMainWindow):
             }
             QCheckBox { color: #b0b0e0; }
             QCheckBox::indicator { width: 14px; height: 14px; }
+            QSlider { min-height: 32px; }
             QSlider::groove:horizontal {
-                height: 5px; background: #2e2e50; border-radius: 2px;
+                height: 6px; background: #2e2e50; border-radius: 3px;
             }
-            QSlider::sub-page:horizontal { background: #5555cc; border-radius: 2px; }
+            QSlider::sub-page:horizontal { background: #5555cc; border-radius: 3px; }
             QSlider::handle:horizontal {
-                width: 15px; height: 15px;
-                background: #7777ee; border-radius: 8px; margin: -5px 0;
+                width: 18px; height: 18px;
+                background: #7777ee; border-radius: 9px; margin: -6px 0;
             }
             QStatusBar { color: #6060a0; font-size: 11px; background: #12122a; }
             QMenu {
